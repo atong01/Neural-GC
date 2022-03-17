@@ -1,18 +1,19 @@
+from copy import deepcopy
+
+import numpy as np
 import torch
 import torch.nn as nn
-import numpy as np
-from copy import deepcopy
 
 
 class LSTM(nn.Module):
     def __init__(self, num_series, hidden):
-        '''
+        """
         LSTM model with output layer to generate predictions.
 
         Args:
           num_series: number of input time series.
           hidden: number of hidden units.
-        '''
+        """
         super(LSTM, self).__init__()
         self.p = num_series
         self.hidden = hidden
@@ -23,10 +24,12 @@ class LSTM(nn.Module):
         self.linear = nn.Conv1d(hidden, 1, 1)
 
     def init_hidden(self, batch):
-        '''Initialize hidden states for LSTM cell.'''
+        """Initialize hidden states for LSTM cell."""
         device = self.lstm.weight_ih_l0.device
-        return (torch.zeros(1, batch, self.hidden, device=device),
-                torch.zeros(1, batch, self.hidden, device=device))
+        return (
+            torch.zeros(1, batch, self.hidden, device=device),
+            torch.zeros(1, batch, self.hidden, device=device),
+        )
 
     def forward(self, X, hidden=None):
         # Set up hidden state.
@@ -44,39 +47,39 @@ class LSTM(nn.Module):
 
 class cLSTM(nn.Module):
     def __init__(self, num_series, hidden):
-        '''
+        """
         cLSTM model with one LSTM per time series.
 
         Args:
           num_series: dimensionality of multivariate time series.
           hidden: number of units in LSTM cell.
-        '''
+        """
         super(cLSTM, self).__init__()
         self.p = num_series
         self.hidden = hidden
 
         # Set up networks.
-        self.networks = nn.ModuleList([
-            LSTM(num_series, hidden) for _ in range(num_series)])
+        self.networks = nn.ModuleList(
+            [LSTM(num_series, hidden) for _ in range(num_series)]
+        )
 
     def forward(self, X, hidden=None):
-        '''
+        """
         Perform forward pass.
 
         Args:
           X: torch tensor of shape (batch, T, p).
           hidden: hidden states for LSTM cell.
-        '''
+        """
         if hidden is None:
             hidden = [None for _ in range(self.p)]
-        pred = [self.networks[i](X, hidden[i])
-                for i in range(self.p)]
+        pred = [self.networks[i](X, hidden[i]) for i in range(self.p)]
         pred, hidden = zip(*pred)
         pred = torch.cat(pred, dim=2)
         return pred, hidden
 
     def GC(self, threshold=True):
-        '''
+        """
         Extract learned Granger causality.
 
         Args:
@@ -85,9 +88,8 @@ class cLSTM(nn.Module):
         Returns:
           GC: (p x p) matrix. Entry (i, j) indicates whether variable j is
             Granger causal of variable i.
-        '''
-        GC = [torch.norm(net.lstm.weight_ih_l0, dim=0)
-              for net in self.networks]
+        """
+        GC = [torch.norm(net.lstm.weight_ih_l0, dim=0) for net in self.networks]
         GC = torch.stack(GC)
         if threshold:
             return (GC > 0).int()
@@ -97,7 +99,7 @@ class cLSTM(nn.Module):
 
 class cLSTMSparse(nn.Module):
     def __init__(self, num_series, sparsity, hidden):
-        '''
+        """
         cLSTM model that only uses specified interactions.
 
         Args:
@@ -105,88 +107,117 @@ class cLSTMSparse(nn.Module):
           sparsity: torch byte tensor indicating Granger causality, with size
             (num_series, num_series).
           hidden: number of units in LSTM cell.
-        '''
+        """
         super(cLSTMSparse, self).__init__()
         self.p = num_series
         self.hidden = hidden
         self.sparsity = sparsity
 
         # Set up networks.
-        self.networks = nn.ModuleList([
-            LSTM(int(torch.sum(sparsity[i].int())), hidden)
-            for i in range(num_series)])
+        self.networks = nn.ModuleList(
+            [LSTM(int(torch.sum(sparsity[i].int())), hidden) for i in range(num_series)]
+        )
 
     def forward(self, X, hidden=None):
-        '''
+        """
         Perform forward pass.
 
         Args:
           X: torch tensor of shape (batch, T, p).
           hidden: hidden states for LSTM cell.
-        '''
+        """
         if hidden is None:
             hidden = [None for _ in range(self.p)]
-        pred = [self.networks[i](X[:, :, self.sparsity[i]], hidden[i])
-                for i in range(self.p)]
+        pred = [
+            self.networks[i](X[:, :, self.sparsity[i]], hidden[i])
+            for i in range(self.p)
+        ]
         pred, hidden = zip(*pred)
         pred = torch.cat(pred, dim=2)
         return pred, hidden
 
 
 def prox_update(network, lam, lr):
-    '''Perform in place proximal update on first layer weight matrix.'''
+    """Perform in place proximal update on first layer weight matrix."""
     W = network.lstm.weight_ih_l0
     norm = torch.norm(W, dim=0, keepdim=True)
-    W.data = ((W / torch.clamp(norm, min=(lam * lr)))
-              * torch.clamp(norm - (lr * lam), min=0.0))
+    W.data = (W / torch.clamp(norm, min=(lam * lr))) * torch.clamp(
+        norm - (lr * lam), min=0.0
+    )
     network.lstm.flatten_parameters()
 
 
 def regularize(network, lam):
-    '''Calculate regularization term for first layer weight matrix.'''
+    """Calculate regularization term for first layer weight matrix."""
     W = network.lstm.weight_ih_l0
     return lam * torch.sum(torch.norm(W, dim=0))
 
 
 def ridge_regularize(network, lam):
-    '''Apply ridge penalty at linear layer and hidden-hidden weights.'''
+    """Apply ridge penalty at linear layer and hidden-hidden weights."""
     return lam * (
-        torch.sum(network.linear.weight ** 2) +
-        torch.sum(network.lstm.weight_hh_l0 ** 2))
+        torch.sum(network.linear.weight ** 2)
+        + torch.sum(network.lstm.weight_hh_l0 ** 2)
+    )
 
 
 def restore_parameters(model, best_model):
-    '''Move parameter values from best_model to model.'''
+    """Move parameter values from best_model to model."""
     for params, best_params in zip(model.parameters(), best_model.parameters()):
         params.data = best_params
 
 
 def arrange_input(data, context):
-    '''
+    """
     Arrange a single time series into overlapping short sequences.
 
     Args:
       data: time series of shape (T, dim).
       context: length of short sequences.
-    '''
+    """
     assert context >= 1 and isinstance(context, int)
-    input = torch.zeros(len(data) - context, context, data.shape[1],
-                        dtype=torch.float32, device=data.device)
-    target = torch.zeros(len(data) - context, context, data.shape[1],
-                         dtype=torch.float32, device=data.device)
+    input = torch.zeros(
+        len(data) - context,
+        context,
+        data.shape[1],
+        dtype=torch.float32,
+        device=data.device,
+    )
+    target = torch.zeros(
+        len(data) - context,
+        context,
+        data.shape[1],
+        dtype=torch.float32,
+        device=data.device,
+    )
     for i in range(context):
         start = i
         end = len(data) - context + i
         input[:, i, :] = data[start:end]
-        target[:, i, :] = data[start+1:end+1]
+        target[:, i, :] = data[start + 1 : end + 1]
     return input.detach(), target.detach()
 
 
-def train_model_gista(clstm, X, context, lam, lam_ridge, lr, max_iter,
-                      check_every=50, r=0.8, lr_min=1e-8, sigma=0.5,
-                      monotone=False, m=10, lr_decay=0.5,
-                      begin_line_search=True, switch_tol=1e-3, verbose=1):
-    '''
+def train_model_gista(
+    clstm,
+    X,
+    context,
+    lam,
+    lam_ridge,
+    lr,
+    max_iter,
+    check_every=50,
+    r=0.8,
+    lr_min=1e-8,
+    sigma=0.5,
+    monotone=False,
+    m=10,
+    lr_decay=0.5,
+    begin_line_search=True,
+    switch_tol=1e-3,
+    verbose=1,
+):
+    """
     Train cLSTM model with GISTA.
 
     Args:
@@ -207,10 +238,10 @@ def train_model_gista(clstm, X, context, lam, lam_ridge, lr, max_iter,
       begin_line_search: whether to begin with line search.
       switch_tol: tolerance for switching to line search.
       verbose: level of verbosity (0, 1, 2).
-    '''
+    """
     p = clstm.p
     clstm_copy = deepcopy(clstm)
-    loss_fn = nn.MSELoss(reduction='mean')
+    loss_fn = nn.MSELoss(reduction="mean")
     lr_list = [lr for _ in range(p)]
 
     # Set up data.
@@ -278,8 +309,7 @@ def train_model_gista(clstm, X, context, lam, lam_ridge, lr, max_iter,
 
             while not step:
                 # Perform tentative ISTA step.
-                for param, temp_param in zip(net.parameters(),
-                                             net_copy.parameters()):
+                for param, temp_param in zip(net.parameters(), net_copy.parameters()):
                     temp_param.data = param - lr_it * param.grad
 
                 # Proximal update.
@@ -294,17 +324,20 @@ def train_model_gista(clstm, X, context, lam, lam_ridge, lr, max_iter,
                     nonsmooth = regularize(net_copy, lam)
                     loss = smooth + nonsmooth
                     tol = (0.5 * sigma / lr_it) * sum(
-                        [torch.sum((param - temp_param) ** 2)
-                         for param, temp_param in
-                         zip(net.parameters(), net_copy.parameters())])
+                        [
+                            torch.sum((param - temp_param) ** 2)
+                            for param, temp_param in zip(
+                                net.parameters(), net_copy.parameters()
+                            )
+                        ]
+                    )
 
                 comp = loss_list[i] if monotone else max(last_losses[i])
                 if not line_search or (comp - loss) > tol:
                     step = True
                     if verbose > 1:
-                        print('Taking step, network i = %d, lr = %f'
-                              % (i, lr_it))
-                        print('Gap = %f, tol = %f' % (comp - loss, tol))
+                        print("Taking step, network i = %d, lr = %f" % (i, lr_it))
+                        print("Gap = %f, tol = %f" % (comp - loss, tol))
 
                     # For next iteration.
                     new_mse_list.append(mse)
@@ -312,8 +345,7 @@ def train_model_gista(clstm, X, context, lam, lam_ridge, lr, max_iter,
                     new_loss_list.append(loss)
 
                     # Adjust initial learning rate.
-                    lr_list[i] = (
-                        (lr_list[i] ** (1 - lr_decay)) * (lr_it ** lr_decay))
+                    lr_list[i] = (lr_list[i] ** (1 - lr_decay)) * (lr_it ** lr_decay)
 
                     if not monotone:
                         if len(last_losses[i]) == m:
@@ -328,7 +360,7 @@ def train_model_gista(clstm, X, context, lam, lam_ridge, lr, max_iter,
                         new_smooth_list.append(smooth_list[i])
                         new_loss_list.append(loss_list[i])
                         if verbose > 0:
-                            print('Network %d converged' % (i + 1))
+                            print("Network %d converged" % (i + 1))
                         break
 
             # Clean up.
@@ -346,7 +378,7 @@ def train_model_gista(clstm, X, context, lam, lam_ridge, lr, max_iter,
         # Check if all networks have converged.
         if sum(done) == p:
             if verbose > 0:
-                print('Done at iteration = %d' % (it + 1))
+                print("Done at iteration = %d" % (it + 1))
             break
 
         # Check progress
@@ -361,28 +393,41 @@ def train_model_gista(clstm, X, context, lam, lam_ridge, lr, max_iter,
             train_mse_list.append(mse_mean)
 
             if verbose > 0:
-                print(('-' * 10 + 'Iter = %d' + '-' * 10) % (it + 1))
-                print('Total loss = %f' % loss_mean)
-                print('MSE = %f, Ridge = %f, Nonsmooth = %f'
-                      % (mse_mean, ridge_mean, nonsmooth_mean))
-                print('Variable usage = %.2f%%'
-                      % (100 * torch.mean(clstm.GC().float())))
+                print(("-" * 10 + "Iter = %d" + "-" * 10) % (it + 1))
+                print("Total loss = %f" % loss_mean)
+                print(
+                    "MSE = %f, Ridge = %f, Nonsmooth = %f"
+                    % (mse_mean, ridge_mean, nonsmooth_mean)
+                )
+                print(
+                    "Variable usage = %.2f%%" % (100 * torch.mean(clstm.GC().float()))
+                )
 
             # Check whether loss has increased.
             if not line_search:
                 if train_loss_list[-2] - train_loss_list[-1] < switch_tol:
                     line_search = True
                     if verbose > 0:
-                        print('Switching to line search')
+                        print("Switching to line search")
 
     return train_loss_list, train_mse_list
 
 
-def train_model_adam(clstm, X, context, lr, max_iter, lam=0, lam_ridge=0,
-                     lookback=5, check_every=50, verbose=1):
-    '''Train model with Adam.'''
+def train_model_adam(
+    clstm,
+    X,
+    context,
+    lr,
+    max_iter,
+    lam=0,
+    lam_ridge=0,
+    lookback=5,
+    check_every=50,
+    verbose=1,
+):
+    """Train model with Adam."""
     p = X.shape[-1]
-    loss_fn = nn.MSELoss(reduction='mean')
+    loss_fn = nn.MSELoss(reduction="mean")
     optimizer = torch.optim.Adam(clstm.parameters(), lr=lr)
     train_loss_list = []
 
@@ -406,8 +451,9 @@ def train_model_adam(clstm, X, context, lr, max_iter, lam=0, lam_ridge=0,
             loss = loss + sum([regularize(net, lam) for net in clstm.networks])
 
         if lam_ridge > 0:
-            loss = loss + sum([ridge_regularize(net, lam_ridge)
-                               for net in clstm.networks])
+            loss = loss + sum(
+                [ridge_regularize(net, lam_ridge) for net in clstm.networks]
+            )
 
         # Take gradient step.
         loss.backward()
@@ -420,8 +466,8 @@ def train_model_adam(clstm, X, context, lr, max_iter, lam=0, lam_ridge=0,
             train_loss_list.append(mean_loss.detach())
 
             if verbose > 0:
-                print(('-' * 10 + 'Iter = %d' + '-' * 10) % (it + 1))
-                print('Loss = %f' % mean_loss)
+                print(("-" * 10 + "Iter = %d" + "-" * 10) % (it + 1))
+                print("Loss = %f" % mean_loss)
 
             # Check for early stopping.
             if mean_loss < best_loss:
@@ -430,7 +476,7 @@ def train_model_adam(clstm, X, context, lr, max_iter, lam=0, lam_ridge=0,
                 best_model = deepcopy(clstm)
             elif (it - best_it) == lookback * check_every:
                 if verbose:
-                    print('Stopping early')
+                    print("Stopping early")
                 break
 
     # Restore best model.
@@ -439,11 +485,21 @@ def train_model_adam(clstm, X, context, lr, max_iter, lam=0, lam_ridge=0,
     return train_loss_list
 
 
-def train_model_ista(clstm, X, context, lr, max_iter, lam=0, lam_ridge=0,
-                     lookback=5, check_every=50, verbose=1):
-    '''Train model with Adam.'''
+def train_model_ista(
+    clstm,
+    X,
+    context,
+    lr,
+    max_iter,
+    lam=0,
+    lam_ridge=0,
+    lookback=5,
+    check_every=50,
+    verbose=1,
+):
+    """Train model with Adam."""
     p = X.shape[-1]
-    loss_fn = nn.MSELoss(reduction='mean')
+    loss_fn = nn.MSELoss(reduction="mean")
     train_loss_list = []
 
     # Set up data.
@@ -478,8 +534,7 @@ def train_model_ista(clstm, X, context, lr, max_iter, lam=0, lam_ridge=0,
         # Calculate loss for next iteration.
         pred = [clstm.networks[i](X)[0] for i in range(p)]
         loss = sum([loss_fn(pred[i][:, :, 0], Y[:, :, i]) for i in range(p)])
-        ridge = sum([ridge_regularize(net, lam_ridge)
-                     for net in clstm.networks])
+        ridge = sum([ridge_regularize(net, lam_ridge) for net in clstm.networks])
         smooth = loss + ridge
 
         # Check progress.
@@ -490,10 +545,11 @@ def train_model_ista(clstm, X, context, lr, max_iter, lam=0, lam_ridge=0,
             train_loss_list.append(mean_loss.detach())
 
             if verbose > 0:
-                print(('-' * 10 + 'Iter = %d' + '-' * 10) % (it + 1))
-                print('Loss = %f' % mean_loss)
-                print('Variable usage = %.2f%%'
-                      % (100 * torch.mean(clstm.GC().float())))
+                print(("-" * 10 + "Iter = %d" + "-" * 10) % (it + 1))
+                print("Loss = %f" % mean_loss)
+                print(
+                    "Variable usage = %.2f%%" % (100 * torch.mean(clstm.GC().float()))
+                )
 
             # Check for early stopping.
             if mean_loss < best_loss:
@@ -502,7 +558,7 @@ def train_model_ista(clstm, X, context, lr, max_iter, lam=0, lam_ridge=0,
                 best_model = deepcopy(clstm)
             elif (it - best_it) == lookback * check_every:
                 if verbose:
-                    print('Stopping early')
+                    print("Stopping early")
                 break
 
     # Restore best model.
@@ -511,11 +567,12 @@ def train_model_ista(clstm, X, context, lr, max_iter, lam=0, lam_ridge=0,
     return train_loss_list
 
 
-def train_unregularized(clstm, X, context, lr, max_iter, lookback=5,
-                        check_every=50, verbose=1):
-    '''Train model with Adam.'''
+def train_unregularized(
+    clstm, X, context, lr, max_iter, lookback=5, check_every=50, verbose=1
+):
+    """Train model with Adam."""
     p = X.shape[-1]
-    loss_fn = nn.MSELoss(reduction='mean')
+    loss_fn = nn.MSELoss(reduction="mean")
     optimizer = torch.optim.Adam(clstm.parameters(), lr=lr)
     train_loss_list = []
 
@@ -545,8 +602,8 @@ def train_unregularized(clstm, X, context, lr, max_iter, lookback=5,
             train_loss_list.append(mean_loss.detach())
 
             if verbose > 0:
-                print(('-' * 10 + 'Iter = %d' + '-' * 10) % (it + 1))
-                print('Loss = %f' % mean_loss)
+                print(("-" * 10 + "Iter = %d" + "-" * 10) % (it + 1))
+                print("Loss = %f" % mean_loss)
 
             # Check for early stopping.
             if mean_loss < best_loss:
@@ -555,7 +612,7 @@ def train_unregularized(clstm, X, context, lr, max_iter, lookback=5,
                 best_model = deepcopy(clstm)
             elif (it - best_it) == lookback * check_every:
                 if verbose:
-                    print('Stopping early')
+                    print("Stopping early")
                 break
 
     # Restore best model.

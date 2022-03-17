@@ -3,7 +3,7 @@ from scipy.integrate import odeint
 
 
 def make_var_stationary(beta, radius=0.97):
-    '''Rescale coefficients of VAR model to make stable.'''
+    """Rescale coefficients of VAR model to make stable."""
     p = beta.shape[0]
     lag = beta.shape[1] // p
     bottom = np.hstack((np.eye(p * (lag - 1)), np.zeros((p * (lag - 1), p))))
@@ -41,24 +41,23 @@ def simulate_var(p, T, lag, sparsity=0.2, beta_value=1.0, sd=0.1, seed=0):
     X = np.zeros((p, T + burn_in))
     X[:, :lag] = errors[:, :lag]
     for t in range(lag, T + burn_in):
-        X[:, t] = np.dot(beta, X[:, (t-lag):t].flatten(order='F'))
-        X[:, t] += + errors[:, t-1]
+        X[:, t] = np.dot(beta, X[:, (t - lag) : t].flatten(order="F"))
+        X[:, t] += +errors[:, t - 1]
 
     return X.T[burn_in:], beta, GC
 
 
 def lorenz(x, t, F):
-    '''Partial derivatives for Lorenz-96 ODE.'''
+    """Partial derivatives for Lorenz-96 ODE."""
     p = len(x)
     dxdt = np.zeros(p)
     for i in range(p):
-        dxdt[i] = (x[(i+1) % p] - x[(i-2) % p]) * x[(i-1) % p] - x[i] + F
+        dxdt[i] = (x[(i + 1) % p] - x[(i - 2) % p]) * x[(i - 1) % p] - x[i] + F
 
     return dxdt
 
 
-def simulate_lorenz_96(p, T, F=10.0, delta_t=0.1, sd=0.1, burn_in=1000,
-                       seed=0):
+def simulate_lorenz_96(p, T, F=10.0, delta_t=0.1, sd=0.1, burn_in=1000, seed=0):
     if seed is not None:
         np.random.seed(seed)
 
